@@ -101,7 +101,7 @@ def old_path():
     return sys.executable + ".old"
 
 
-def _fresh_env():
+def fresh_env():
     # without this a new one-file EXE would reuse this process's temporary unpack folder
     return dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
 
@@ -109,7 +109,7 @@ def _fresh_env():
 def verify_runs(new_file):
     """Start the downloaded EXE in self-test mode, so a version Windows refuses to run never replaces this one."""
     try:
-        subprocess.run([new_file, SELF_TEST_ARG], env=_fresh_env(), timeout=120, check=True)
+        subprocess.run([new_file, SELF_TEST_ARG], env=fresh_env(), timeout=120, check=True)
     except OSError as e:
         raise RuntimeError("Windows blocked the new version from running (Smart App Control or antivirus). "
                            f"Your current version was kept.\n\n{e}") from e
@@ -128,7 +128,7 @@ def install_and_launch(new_file, args=()):
     except OSError:
         os.replace(old, cur)
         raise
-    subprocess.Popen([cur, *args], env=_fresh_env(), close_fds=True,
+    subprocess.Popen([cur, *args], env=fresh_env(), close_fds=True,
                      creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
 
 

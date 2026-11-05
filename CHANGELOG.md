@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.4.3 — 2026-11-05
+- The app now offers to install itself the first time it opens, with a desktop shortcut, Windows search and an Apps list entry for removal.
+
 ## 1.4.2 — 2026-11-05
 - PDF Editor Pro is now open source under AGPL-3.0; the About box links to the source code.
 - New installer: adds a desktop shortcut and a Start Menu entry, so the app can be found with Windows search.

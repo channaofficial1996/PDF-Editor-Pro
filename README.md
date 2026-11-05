@@ -5,8 +5,8 @@ Free PDF editor for Windows with Khmer text support, by Cambo Ads.
 
 ## ទាញយក / Download
 
-ទាញយក **PDF Editor Pro Setup** ពីទំព័រ [Releases](https://github.com/channaofficial1996/PDF-Editor-Pro/releases/latest) រួចដំឡើង។
-Setup បង្កើត shortcut លើ Desktop ហើយអ្នកអាចរកកម្មវិធីតាម Windows search បាន។
+ទាញយក **PDF Editor Pro v….exe** ពីទំព័រ [Releases](https://github.com/channaofficial1996/PDF-Editor-Pro/releases/latest) បើកវា រួចចុច **Install**។
+កម្មវិធីនឹងបង្កើត shortcut លើ Desktop ហើយអ្នកអាចរកវាតាម Windows search បាន។ បើចង់ដំឡើងតាមវិធីធម្មតា ក៏អាចប្រើ **PDF Editor Pro Setup** បានដែរ។
 
 កម្មវិធីនេះមិនទាន់មានហត្ថលេខា Code Signing ទេ៖
 

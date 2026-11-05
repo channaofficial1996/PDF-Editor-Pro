@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QC
                                QVBoxLayout, QWidget)
 
 import i18n
+import selfinstall
 import theme
 import updater
 from version import COMPANY, COPYRIGHT, RELEASE_DATE, UPDATE_REPO, VERSION
@@ -1015,6 +1016,8 @@ class MainWindow(QMainWindow):
         ])
 
         m = mb.addMenu(tr("&Help"))
+        if selfinstall.is_frozen() and not selfinstall.is_installed():
+            m.addAction(self.act("Install on this PC…", self.install_app, icon="update"))
         m.addAction(self.act("Check for updates…", self.check_updates, icon="update"))
         auto = QAction(tr("Check for updates automatically"), self, checkable=True)
         auto.setChecked(self.settings.value("auto_update_check", True, type=bool))
@@ -1448,6 +1451,9 @@ class MainWindow(QMainWindow):
         self.update_sig.download_failed.connect(self._update_download_failed)
         if self.settings.value("auto_update_check", True, type=bool):
             QTimer.singleShot(3000, lambda: self.check_updates(silent=True))
+        if (selfinstall.is_frozen() and not selfinstall.is_installed()
+                and not self.settings.value("skip_install_prompt", False, type=bool)):
+            QTimer.singleShot(600, self._offer_install)
 
     # ---------------------------------------------------------------- state helpers
     def page(self):
@@ -2705,6 +2711,39 @@ class MainWindow(QMainWindow):
         finally:
             painter.end()
 
+    # ---------------------------------------------------------------- install
+    def _offer_install(self):
+        box = QMessageBox(self)
+        box.setWindowTitle(APP_NAME)
+        box.setIcon(QMessageBox.Question)
+        box.setText(tr("Install PDF Editor Pro on this PC?"))
+        box.setInformativeText(tr("Adds a desktop shortcut and lets you find the app with Windows search."))
+        yes = box.addButton(tr("Install"), QMessageBox.AcceptRole)
+        box.addButton(tr("Not now"), QMessageBox.RejectRole)
+        never = box.addButton(tr("Don't ask again"), QMessageBox.DestructiveRole)
+        box.exec()
+        if box.clickedButton() is yes:
+            self.install_app()
+        elif box.clickedButton() is never:
+            self.settings.setValue("skip_install_prompt", True)
+
+    def install_app(self):
+        if not self.confirm_discard():
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            exe = selfinstall.install()
+        except OSError as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, APP_NAME, f"{tr('Could not install. Close other copies of the app and try again.')}"
+                                                f"\n\n{e}")
+            return
+        QApplication.restoreOverrideCursor()
+        QMessageBox.information(self, APP_NAME, tr("Installed. Open it from the desktop shortcut or Windows search."))
+        selfinstall.launch(exe, [self.path] if self.path and os.path.exists(self.path) else [])
+        self.modified = False  # the user already chose to save or discard above
+        self.close()
+
     # ---------------------------------------------------------------- updates
     def check_updates(self, silent=False):
         if self.update_busy:
@@ -2838,14 +2877,23 @@ def excepthook(etype, value, tb):
 def main():
     if updater.SELF_TEST_ARG in sys.argv:  # the old version checks that this EXE can start before installing it
         return
+    if selfinstall.INSTALL_ARG in sys.argv:
+        selfinstall.install()
+        return
     sys.excepthook = excepthook
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")
     i18n.LANG = "en"  # English-only interface
+    if selfinstall.UNINSTALL_ARG in sys.argv:  # started from Windows Settings > Apps
+        if selfinstall.QUIET_ARG in sys.argv or QMessageBox.question(
+                None, APP_NAME, tr("Remove PDF Editor Pro from this PC?")) == QMessageBox.Yes:
+            selfinstall.uninstall()
+        return
     FONTS.update(find_fonts())
     updater.cleanup_previous()
+    selfinstall.refresh_registration()
     w = MainWindow()
     w.show()
     if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
