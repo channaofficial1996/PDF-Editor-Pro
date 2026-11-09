@@ -42,6 +42,7 @@ APP_NAME = "PDF Editor Pro"
 PDF_FILTER = "PDF files (*.pdf)"
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp")
 IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.webp)"
+OPEN_FILTER = "PDF and images (*.pdf *.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.webp)"
 FONT_DIRS = [os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"),
              os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Windows", "Fonts")]
 REDACT_IMG_NONE = getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
@@ -617,29 +618,75 @@ class PageView(QGraphicsView):
         self.setFrameShape(QFrame.NoFrame)
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         self.setAlignment(Qt.AlignCenter)
-        self.pix = None
+        self.page_rects = []  # scene rect of every page, stacked top to bottom
+        self.page_items = []  # rendered pixmap item per page (None until it scrolls into view)
         self.start = None
         self.temp = None
         self.pts = []
         self.overlays = []
         self.moving = None
+        self.verticalScrollBar().valueChanged.connect(lambda _v: self.win.on_view_scroll())
+        self.horizontalScrollBar().valueChanged.connect(lambda _v: self.win.on_view_scroll(False))
 
-    def show_pixmap(self, qpix):
+    def layout_pages(self, sizes):
+        """Lay out white placeholders for all pages (sizes in scene units) in one scrolling column."""
         self.sc.clear()
         self.overlays = []
         self.temp = None
         self.moving = None
-        dpr = qpix.devicePixelRatio()
-        w, h = qpix.width() / dpr, qpix.height() / dpr
-        for grow, alpha in ((10, 10), (6, 18), (3, 28), (1, 40)):  # soft shadow
-            self.sc.addRect(QRectF(-grow, -grow + 3, w + 2 * grow, h + 2 * grow), QPen(Qt.NoPen),
-                            QBrush(QColor(0, 0, 0, alpha)))
-        self.pix = self.sc.addPixmap(qpix)
-        self.sc.setSceneRect(QRectF(-24, -24, w + 48, h + 48))
+        self.page_rects = []
+        maxw = max((w for w, _h in sizes), default=0)
+        y = 0.0
+        shadow = QPen(Qt.NoPen)
+        for w, h in sizes:
+            r = QRectF((maxw - w) / 2, y, w, h)
+            for grow, alpha in ((6, 14), (3, 26), (1, 40)):  # soft shadow
+                self.sc.addRect(r.adjusted(-grow, -grow + 3, grow, grow + 3), shadow, QBrush(QColor(0, 0, 0, alpha)))
+            self.sc.addRect(r, shadow, QBrush(Qt.white))
+            self.page_rects.append(r)
+            y += h + PAGE_GAP
+        self.page_items = [None] * len(sizes)
+        self.sc.setSceneRect(QRectF(-24, -24, maxw + 48, max(0.0, y - PAGE_GAP) + 48))
+
+    def set_page_pixmap(self, i, qpix):
+        self.drop_page_pixmap(i)
+        it = self.sc.addPixmap(qpix)
+        it.setPos(self.page_rects[i].topLeft())
+        it.setZValue(1)
+        self.page_items[i] = it
+
+    def drop_page_pixmap(self, i):
+        if self.page_items[i] is not None:
+            self.sc.removeItem(self.page_items[i])
+            self.page_items[i] = None
+
+    def page_at(self, p):
+        """Index of the page under scene point p (gaps count toward the nearest page)."""
+        rs = self.page_rects
+        if not rs or p.y() < rs[0].top() - PAGE_GAP or p.y() > rs[-1].bottom() + PAGE_GAP:
+            return None
+        lo, hi = 0, len(rs) - 1
+        while lo < hi:  # first page whose bottom (+ half gap) is below p
+            mid = (lo + hi) // 2
+            if rs[mid].bottom() + PAGE_GAP / 2 < p.y():
+                lo = mid + 1
+            else:
+                hi = mid
+        return lo
+
+    def visible_pages(self):
+        if not self.page_rects:
+            return []
+        vr = self.mapToScene(self.viewport().rect()).boundingRect()
+        a, b = self.page_at(vr.topLeft()), self.page_at(vr.bottomLeft())
+        a = 0 if a is None else a
+        b = len(self.page_rects) - 1 if b is None else b
+        return [i for i in range(a, b + 1) if self.page_rects[i].intersects(vr)]
 
     def clear_scene(self):
         self.sc.clear()
-        self.pix = None
+        self.page_rects = []
+        self.page_items = []
         self.overlays = []
 
     def add_overlay(self, rect, color, alpha=60, dashed=False):
@@ -663,9 +710,14 @@ class PageView(QGraphicsView):
 
     def mousePressEvent(self, e):
         tool = self.win.tool
-        if self.pix is None or e.button() != Qt.LeftButton or tool == "hand":
+        if not self.page_rects or e.button() != Qt.LeftButton or tool == "hand":
             return super().mousePressEvent(e)
         p = self._pos(e)
+        i = self.page_at(p)
+        if i is None:
+            return
+        if i != self.win.cur:  # clicking a page makes it the one being edited
+            self.win.set_current(i)
         self.start = p
         self.pts = [p]
         if tool == "select":
@@ -727,7 +779,7 @@ class PageView(QGraphicsView):
         self.win.apply_tool(tool, start, p, list(self.pts))
 
     def mouseDoubleClickEvent(self, e):
-        if self.pix is not None and self.win.tool == "select" and e.button() == Qt.LeftButton:
+        if self.page_rects and self.win.tool == "select" and e.button() == Qt.LeftButton:
             self.win.double_click(self._pos(e))
         else:
             super().mouseDoubleClickEvent(e)
@@ -739,17 +791,11 @@ class PageView(QGraphicsView):
         if e.modifiers() & Qt.ControlModifier:
             self.win.zoom_by(1.15 if d > 0 else 1 / 1.15)
             return
-        vb = self.verticalScrollBar()
-        if d < 0 and vb.value() >= vb.maximum() and self.win.cur < self.win.doc.page_count - 1:
-            self.win.goto(self.win.cur + 1)
-            return
-        if d > 0 and vb.value() <= vb.minimum() and self.win.cur > 0:
-            self.win.goto(self.win.cur - 1, bottom=True)
-            return
         super().wheelEvent(e)
 
 
 THUMB_W, THUMB_MAX_H = 118, 168
+PAGE_GAP = 16  # space between pages in the continuous view
 
 
 class ThumbDelegate(QStyledItemDelegate):
@@ -864,6 +910,8 @@ class MainWindow(QMainWindow):
         self.search_idx = -1
         self._thumb_gen = 0
         self._thumb_queue = []
+        self._rendering = False  # suppress scroll handling while the view is rebuilt / jumped
+        self._scroll_page = 0  # page last found at the viewport centre
         self._icons = []  # (widget/action, icon name, on-color?)
         self.tool_colors = dict(TOOL_COLORS)
 
@@ -1319,7 +1367,7 @@ class MainWindow(QMainWindow):
             b.clicked.connect(fn)
             r2.addWidget(b)
         v.addLayout(r2)
-        drop = QLabel(tr("or drag & drop a PDF file anywhere in this window"))
+        drop = QLabel(tr("You can select or drag & drop several PDFs / images at once"))
         drop.setObjectName("DropZone")
         drop.setAlignment(Qt.AlignCenter)
         v.addWidget(drop)
@@ -1545,9 +1593,17 @@ class MainWindow(QMainWindow):
             self.rebuild_thumbs()
             self.rebuild_toc()
             self._clear_search()
+            self.render()
+            if self.cur not in self.view.visible_pages():
+                self.goto(self.cur)
         else:
             self.update_thumb(self.cur)
-        self.render()
+            if len(self.view.page_rects) == self.doc.page_count and \
+                    abs(self.view.page_rects[self.cur].width() - self.page().rect.width * self.zoom) < 0.5:
+                self.rerender_page(self.cur)
+                self.draw_overlays()
+            else:
+                self.render()
         self.update_ui()
 
     def _restore(self, data, cur):
@@ -1571,15 +1627,26 @@ class MainWindow(QMainWindow):
         self._restore(*self.redo_stack.pop())
 
     # ---------------------------------------------------------------- coordinates
-    def scene_to_pdf(self, p):
-        return fitz.Point(p.x() / self.zoom, p.y() / self.zoom) * self.page().derotation_matrix
+    def _page_obj(self, pno):
+        return self.page() if pno == self.cur else self.doc[pno]
+
+    def _page_origin(self, pno):
+        rs = self.view.page_rects
+        return rs[pno].topLeft() if 0 <= pno < len(rs) else QPointF(0, 0)
+
+    def scene_to_pdf(self, p, pno=None):
+        pno = self.cur if pno is None else pno
+        o = self._page_origin(pno)
+        return fitz.Point((p.x() - o.x()) / self.zoom, (p.y() - o.y()) / self.zoom) * \
+            self._page_obj(pno).derotation_matrix
 
     def scene_rect_to_pdf(self, a, b):
         return fitz.Rect(self.scene_to_pdf(a), self.scene_to_pdf(b)).normalize()
 
-    def pdf_rect_to_scene(self, r):
-        r = (fitz.Rect(r) * self.page().rotation_matrix).normalize() * self.zoom
-        return QRectF(r.x0, r.y0, r.width, r.height)
+    def pdf_rect_to_scene(self, r, pno=None):
+        pno = self.cur if pno is None else pno
+        r = (fitz.Rect(r) * self._page_obj(pno).rotation_matrix).normalize() * self.zoom
+        return QRectF(r.x0, r.y0, r.width, r.height).translated(self._page_origin(pno))
 
     # ---------------------------------------------------------------- file handling
     def confirm_discard(self):
@@ -1601,9 +1668,48 @@ class MainWindow(QMainWindow):
         self.update_ui()
 
     def open_dialog(self):
-        f, _ = QFileDialog.getOpenFileName(self, tr("Open PDF"), "", f"{PDF_FILTER};;{IMAGE_FILTER};;All files (*)")
-        if f:
-            self.open_path(f)
+        files, _ = QFileDialog.getOpenFileNames(self, tr("Open PDF"), "", f"{OPEN_FILTER};;{PDF_FILTER};;"
+                                                                           f"{IMAGE_FILTER};;All files (*)")
+        self.open_files(files)
+
+    def open_files(self, files):
+        """Open one file, or several PDFs / images combined into one document."""
+        files = [f for f in files if f]
+        if not files:
+            return
+        if len(files) == 1 and self.doc is None:
+            return self.open_path(files[0])
+        if self.doc is not None:
+            box = QMessageBox(QMessageBox.Question, APP_NAME,
+                              f"{len(files)} {tr('file(s) selected.')}\n{tr('What do you want to do?')}", parent=self)
+            b_add = box.addButton(tr("Add pages to current document"), QMessageBox.AcceptRole)
+            b_new = box.addButton(tr("Open as new document"), QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            if box.clickedButton() is b_add:
+                return self.merge_files(files)
+            if box.clickedButton() is not b_new:
+                return
+            if len(files) == 1:
+                return self.open_path(files[0])
+        if not self.confirm_discard():
+            return
+        out = fitz.open()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            for f in files:
+                try:
+                    out.insert_pdf(self._file_to_pdf(f))
+                except Exception as ex:
+                    QMessageBox.warning(self, APP_NAME, f"{os.path.basename(f)}\n{ex}")
+        finally:
+            QApplication.restoreOverrideCursor()
+        if out.page_count == 0:
+            return
+        self.set_document(out, None)
+        self.modified = True
+        self.update_ui()
+        self.toast(f"✓ {len(files)} {tr('files')} → {out.page_count} {tr('Pages')}", 6000)
 
     def open_path(self, path):
         if path.lower().endswith(IMAGE_EXTS):
@@ -1646,6 +1752,7 @@ class MainWindow(QMainWindow):
         self._clear_search()
         QApplication.processEvents()
         self.fit_width()
+        self.goto(0)
         self.update_ui()
         self.set_tool(self.tool if self.tool not in ("image", "signature") else "hand")
 
@@ -1716,35 +1823,28 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, e):
         files = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
-        pdfs = [f for f in files if f.lower().endswith(".pdf")]
-        imgs = [f for f in files if f.lower().endswith(IMAGE_EXTS)]
-        if pdfs and self.doc is not None:
-            r = QMessageBox.question(self, APP_NAME, "Append the dropped file(s) to the current document?\n"
-                                                     "(No = open the first file instead)",
-                                     QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
-            if r == QMessageBox.Yes:
-                return self.merge_files(pdfs + imgs)
-            if r == QMessageBox.Cancel:
-                return
-        if pdfs:
-            self.open_path(pdfs[0])
-        elif imgs:
-            if self.doc is not None:
-                self.merge_files(imgs)
-            else:
-                self.images_to_pdf(imgs)
+        self.open_files([f for f in files if f.lower().endswith((".pdf",) + IMAGE_EXTS)])
 
     # ---------------------------------------------------------------- rendering & navigation
     def render(self):
+        """Rebuild the continuous page view, keeping the scroll position."""
         if self.doc is None:
             self.view.clear_scene()
             return
-        page = self.page()
-        dpr = self.devicePixelRatioF()
-        pix = page.get_pixmap(matrix=fitz.Matrix(self.zoom * dpr, self.zoom * dpr), annots=True)
-        qp = QPixmap.fromImage(pix_to_qimage(pix))
-        qp.setDevicePixelRatio(dpr)
-        self.view.show_pixmap(qp)
+        vb, hb = self.view.verticalScrollBar(), self.view.horizontalScrollBar()
+        v, h = vb.value(), hb.value()
+        self._rendering = True
+        try:
+            self.view.layout_pages([(p.rect.width * self.zoom, p.rect.height * self.zoom) for p in self.doc])
+            vb.setValue(v)
+            hb.setValue(h)
+        finally:
+            self._rendering = False
+        self.render_visible()
+        self.draw_overlays()
+
+    def draw_overlays(self):
+        self.view.clear_overlays()
         self.draw_search_overlays()
         if self.sel_xref:
             a = self.selected_annot()
@@ -1753,19 +1853,83 @@ class MainWindow(QMainWindow):
             else:
                 self.sel_xref = None
 
+    def render_visible(self):
+        """Render the pages in (and next to) the viewport; free pixmaps of pages far away."""
+        vis = self.view.visible_pages()
+        if not vis or self.doc is None:
+            return
+        n = len(self.view.page_items)
+        lo, hi = max(0, vis[0] - 1), min(n - 1, vis[-1] + 1)
+        dpr = self.devicePixelRatioF()
+        m = fitz.Matrix(self.zoom * dpr, self.zoom * dpr)
+        for i in range(lo, hi + 1):
+            if self.view.page_items[i] is None:
+                qp = QPixmap.fromImage(pix_to_qimage(self._page_obj(i).get_pixmap(matrix=m, annots=True)))
+                qp.setDevicePixelRatio(dpr)
+                self.view.set_page_pixmap(i, qp)
+        for i, it in enumerate(self.view.page_items):
+            if it is not None and (i < lo - 4 or i > hi + 4):
+                self.view.drop_page_pixmap(i)
+
+    def rerender_page(self, i):
+        if 0 <= i < len(self.view.page_items):
+            self.view.drop_page_pixmap(i)
+        self.render_visible()
+
+    def on_view_scroll(self, track_page=True):
+        if self._rendering or self.doc is None or not self.view.page_rects:
+            return
+        self.render_visible()
+        if not track_page:
+            return
+        vb = self.view.verticalScrollBar()
+        vis = self.view.visible_pages()
+        if vb.value() <= vb.minimum() and vis:
+            i = vis[0]
+        elif vb.value() >= vb.maximum() and vis:
+            i = vis[-1]
+        else:
+            i = self.view.page_at(self.view.mapToScene(self.view.viewport().rect().center()))
+        if i is not None and i != self._scroll_page:
+            self._scroll_page = i
+            self.set_current(i)
+
+    def set_current(self, n):
+        """Make page n the active page (for tools, thumbnails, status) without scrolling."""
+        if self.doc is None or n == self.cur:
+            return
+        self.cur = n
+        if self.sel_xref:
+            self.sel_xref = None
+            self.draw_overlays()
+        self.thumbs.blockSignals(True)
+        self.thumbs.setCurrentRow(n)
+        self.thumbs.blockSignals(False)
+        it = self.thumbs.item(n)
+        if it is not None:
+            self.thumbs.scrollToItem(it)
+        self.update_ui()
+
+    def _scroll_to(self, fn):
+        self._rendering = True
+        try:
+            fn()
+        finally:
+            self._rendering = False
+        self.render_visible()
+
     def goto(self, n, bottom=False):
         if self.doc is None:
             return
         n = max(0, min(n, self.doc.page_count - 1))
-        if n != self.cur:
-            self.sel_xref = None
-        self.cur = n
-        self.render()
+        if len(self.view.page_rects) != self.doc.page_count:
+            self.render()
+        self.set_current(n)
+        self._scroll_page = n
+        r = self.view.page_rects[n]
         vb = self.view.verticalScrollBar()
-        vb.setValue(vb.maximum() if bottom else vb.minimum())
-        self.thumbs.blockSignals(True)
-        self.thumbs.setCurrentRow(n)
-        self.thumbs.blockSignals(False)
+        y = r.bottom() + 12 - self.view.viewport().height() if bottom else r.top() - 12
+        self._scroll_to(lambda: vb.setValue(vb.value() + self.view.mapFromScene(QPointF(r.left(), y)).y()))
         self.update_ui()
 
     def _page_from_edit(self):
@@ -1780,8 +1944,21 @@ class MainWindow(QMainWindow):
             self.goto(n - 1)
 
     def set_zoom(self, z):
+        # keep the same spot of the same page under the viewport centre
+        anchor = None
+        if self.view.page_rects:
+            c = self.view.mapToScene(self.view.viewport().rect().center())
+            i = self.view.page_at(c)
+            if i is not None:
+                r = self.view.page_rects[i]
+                anchor = (i, (c.x() - r.left()) / max(1.0, r.width()), (c.y() - r.top()) / max(1.0, r.height()))
         self.zoom = max(0.1, min(z, 8.0))
         self.render()
+        if anchor and anchor[0] < len(self.view.page_rects):
+            i, fx, fy = anchor
+            r = self.view.page_rects[i]
+            self._scroll_to(lambda: self.view.centerOn(r.left() + fx * r.width(), r.top() + fy * r.height()))
+            self._scroll_page = i
         self.update_ui()
 
     def zoom_by(self, f):
@@ -2227,7 +2404,7 @@ class MainWindow(QMainWindow):
         self.search_idx = -1
         self.find_lbl.setText("")
         if had and self.doc is not None:
-            self.render()
+            self.draw_overlays()
 
     def find_next(self, step=1):
         text = self.find_edit.text()
@@ -2247,16 +2424,15 @@ class MainWindow(QMainWindow):
         self.find_lbl.setText(f"{self.search_idx + 1}/{len(self.search_hits)}")
         if pno != self.cur:
             self.goto(pno)
-        else:
-            self.render()
-        self.view.centerOn(self.pdf_rect_to_scene(r).center())
+        self.draw_overlays()
+        self._scroll_to(lambda: self.view.centerOn(self.pdf_rect_to_scene(r, pno).center()))
+        self._scroll_page = pno
 
     def draw_search_overlays(self):
         for i, (pno, r) in enumerate(self.search_hits):
-            if pno == self.cur:
-                cur = i == self.search_idx
-                self.view.add_overlay(self.pdf_rect_to_scene(r), QColor(255, 120, 0) if cur else QColor(255, 210, 0),
-                                      110 if cur else 70)
+            cur = i == self.search_idx
+            self.view.add_overlay(self.pdf_rect_to_scene(r, pno), QColor(255, 120, 0) if cur else QColor(255, 210, 0),
+                                  110 if cur else 70)
 
     # ---------------------------------------------------------------- page operations
     def rotate_pages(self, deg, all_pages=False):

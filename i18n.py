@@ -112,6 +112,11 @@ KM = {
     "No editable text here (scanned pages need OCR).": "គ្មានអក្សរដែលអាចកែបាននៅទីនេះទេ (ទំព័រ scan ត្រូវការ OCR)។",
     "Copied to clipboard.": "បានចម្លងរួចហើយ។", "Saved": "បានរក្សាទុក",
     "Field": "ឈ្មោះ", "Type": "ប្រភេទ", "Value": "តម្លៃ",
+    "You can select or drag & drop several PDFs / images at once":
+        "អាចជ្រើស ឬទាញឯកសារ PDF / រូបភាពច្រើនមកដាក់ក្នុងពេលតែមួយ",
+    "file(s) selected.": "ឯកសារត្រូវបានជ្រើស។", "What do you want to do?": "តើអ្នកចង់ធ្វើអ្វី?",
+    "Add pages to current document": "បន្ថែមទំព័រទៅឯកសារបច្ចុប្បន្ន",
+    "Open as new document": "បើកជាឯកសារថ្មី", "files": "ឯកសារ",
 }
 
 

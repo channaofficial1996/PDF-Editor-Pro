@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.0 — 2026-11-09
+- All pages now show in one scrolling view. Click any page to edit it with the current tool; the page list and page number follow as you scroll.
+- Open several PDFs or images at once (choose more than one file in Open, or drag several in). They are combined into one document, or added to the document that is already open.
+- Search highlights now show on every page, not only the current one.
+
 ## 1.4.3 — 2026-11-05
 - The app now offers to install itself the first time it opens, with a desktop shortcut, Windows search and an Apps list entry for removal.
 
