@@ -1,8 +1,11 @@
 """Build "dist/PDF Editor Pro v<VERSION>.exe" and its installer "dist/PDF Editor Pro Setup v<VERSION>.exe".
+On macOS it builds "dist/PDF Editor Pro.app" and "dist/PDF Editor Pro v<VERSION> macOS <arch>.dmg" instead.
 
 Usage: bump VERSION in version.py (and add a CHANGELOG.md entry), then run:  python build.py
 """
 import os
+import platform
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -49,8 +52,66 @@ def build_installer():
     return os.path.join("dist", f"PDF Editor Pro Setup v{VERSION}.exe")
 
 
+def clean(*names):
+    for junk in ("build", "__pycache__", *names):
+        if os.path.isdir(junk):
+            shutil.rmtree(junk, ignore_errors=True)
+        elif os.path.exists(junk):
+            os.remove(junk)
+
+
+def mac_dmg_name():
+    arch = "Apple Silicon" if platform.machine() == "arm64" else "Intel"
+    return os.path.join("dist", f"PDF Editor Pro v{VERSION} macOS {arch}.dmg")
+
+
+def build_mac():
+    """An unsigned .app (ad-hoc signed, which Apple Silicon requires) packed in a drag-to-Applications disk image."""
+    app_name = "PDF Editor Pro"
+    app = os.path.join("dist", app_name + ".app")
+    shutil.rmtree(app, ignore_errors=True)
+    cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir", "--windowed", "--name", app_name,
+           "--icon", "app.ico", "--add-data", f"app.ico{os.pathsep}.",
+           "--osx-bundle-identifier", "com.camboads.pdfeditorpro",
+           "--exclude-module", "tkinter", "--log-level", "WARN", "pdf_editor.py"]
+    subprocess.run(cmd, check=True)
+    clean(app_name + ".spec")
+    shutil.rmtree(os.path.join("dist", app_name), ignore_errors=True)  # the loose onedir copy beside the .app
+
+    plist_path = os.path.join(app, "Contents", "Info.plist")
+    with open(plist_path, "rb") as fh:
+        info = plistlib.load(fh)
+    info.update({
+        "CFBundleShortVersionString": VERSION, "CFBundleVersion": VERSION, "NSHumanReadableCopyright": COPYRIGHT,
+        "NSHighResolutionCapable": True, "LSMinimumSystemVersion": "11.0",
+        # lets Finder offer the app for PDFs (Open With, double-click once chosen as default)
+        "CFBundleDocumentTypes": [{"CFBundleTypeName": "PDF document", "CFBundleTypeRole": "Editor",
+                                   "LSHandlerRank": "Alternate", "LSItemContentTypes": ["com.adobe.pdf"]}],
+    })
+    with open(plist_path, "wb") as fh:
+        plistlib.dump(info, fh)
+    # changing Info.plist breaks PyInstaller's signature, so sign again (ad hoc: no Apple certificate)
+    subprocess.run(["codesign", "--force", "--deep", "--sign", "-", app], check=True)
+
+    dmg = mac_dmg_name()
+    stage = os.path.join("build", "dmg")
+    shutil.rmtree(stage, ignore_errors=True)
+    os.makedirs(stage)
+    subprocess.run(["ditto", app, os.path.join(stage, app_name + ".app")], check=True)
+    os.symlink("/Applications", os.path.join(stage, "Applications"))
+    if os.path.exists(dmg):
+        os.remove(dmg)
+    subprocess.run(["hdiutil", "create", "-volname", f"{app_name} {VERSION}", "-srcfolder", stage,
+                    "-format", "UDZO", "-ov", dmg], check=True)
+    clean()
+    print(f"\nBuilt: {os.path.abspath(app)}\nDisk image: {os.path.abspath(dmg)}")
+
+
 def main():
     os.chdir(HERE)
+    if sys.platform == "darwin":
+        build_mac()
+        return
     with open("version_info.txt", "w", encoding="utf-8") as fh:
         fh.write(VERSION_INFO)
     target = os.path.join("dist", NAME + ".exe")
@@ -60,11 +121,7 @@ def main():
            "--icon", "app.ico", "--add-data", "app.ico;.", "--version-file", "version_info.txt",
            "--exclude-module", "tkinter", "--log-level", "WARN", "pdf_editor.py"]
     subprocess.run(cmd, check=True)
-    for junk in ("build", "__pycache__", "version_info.txt", NAME + ".spec"):
-        if os.path.isdir(junk):
-            shutil.rmtree(junk, ignore_errors=True)
-        elif os.path.exists(junk):
-            os.remove(junk)
+    clean("version_info.txt", NAME + ".spec")
     try:
         os.remove(target + ".old")
     except OSError:

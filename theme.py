@@ -1,4 +1,7 @@
 """Colors, stylesheet and line icons for PDF Editor Pro."""
+import re
+import sys
+
 from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtSvg import QSvgRenderer
@@ -109,6 +112,11 @@ QProgressDialog {{ background: {surface}; }}
 #Subtitle {{ color: {muted}; font-size: 11pt; }}
 #DropZone {{ border: 2px dashed {border}; border-radius: 12px; color: {muted}; padding: 16px; }}
 """
+if sys.platform == "darwin":
+    # macOS has no Segoe UI / Khmer UI, and Qt there counts 72 points per inch instead of 96, so the
+    # same pt size would look a quarter smaller than on Windows
+    QSS = QSS.replace('"Segoe UI", "Khmer UI"', '"Helvetica Neue", "Khmer Sangam MN"')
+    QSS = re.sub(r"(\d+(?:\.\d+)?)pt", lambda m: f"{float(m.group(1)) * 4 / 3:g}pt", QSS)
 
 
 def stylesheet(t):

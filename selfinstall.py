@@ -1,9 +1,14 @@
-"""Let the plain EXE install itself for the current user: copy, desktop and Start Menu shortcuts, Apps list entry."""
+"""Let the plain EXE install itself for the current user: copy, desktop and Start Menu shortcuts, Apps list entry.
+
+Windows only: on macOS the app is a normal .app bundle that the user drags into Applications."""
 import os
 import shutil
 import subprocess
 import sys
-import winreg
+
+IS_WINDOWS = sys.platform == "win32"
+if IS_WINDOWS:
+    import winreg
 
 from PySide6.QtCore import QFile, QStandardPaths
 
@@ -30,7 +35,10 @@ def is_frozen():
 
 
 def is_installed():
-    """True when this process is running from the install folder (also the case after using the Setup installer)."""
+    """True when this process is running from the install folder (also the case after using the Setup installer).
+    Always True off Windows, so the app never offers to install itself there."""
+    if not IS_WINDOWS:
+        return True
     return is_frozen() and os.path.normcase(os.path.dirname(sys.executable)) == os.path.normcase(install_dir())
 
 
@@ -52,6 +60,8 @@ def _register(exe):
 
 def refresh_registration():
     """Keep the Apps list version right after an in-app update."""
+    if not IS_WINDOWS:
+        return
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_KEY):
             pass

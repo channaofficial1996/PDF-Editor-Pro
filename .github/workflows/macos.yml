@@ -1,0 +1,52 @@
+# Builds the macOS disk images and attaches them to a GitHub Release.
+# Runs by itself when release.py publishes a release; it can also be started by hand from the Actions tab.
+name: macOS build
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the disk images to (e.g. v1.6.0); leave empty to only build"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]  # Apple Silicon, Intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pymupdf==1.25.5 pyside6 pyinstaller pillow
+
+      - name: Build
+        run: python build.py
+
+      - name: Smoke test
+        run: '"dist/PDF Editor Pro.app/Contents/MacOS/PDF Editor Pro" --update-self-test'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ matrix.runner }}
+          path: dist/*.dmg
+
+      - name: Attach to the release
+        if: github.event.release.tag_name || inputs.tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh release upload "$TAG" dist/*.dmg --clobber --repo "$GITHUB_REPOSITORY"

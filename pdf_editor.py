@@ -16,7 +16,7 @@ import threading
 import traceback
 
 import pymupdf as fitz
-from PySide6.QtCore import (QBuffer, QIODevice, QLineF, QObject, QPointF, QRectF, QSettings, QSize, Qt, QTimer,
+from PySide6.QtCore import (QBuffer, QEvent, QIODevice, QLineF, QObject, QPointF, QRectF, QSettings, QSize, Qt, QTimer,
                             QUrl, Signal)
 from PySide6.QtGui import (QAction, QBrush, QColor, QDesktopServices, QFont, QIcon, QImage, QIntValidator, QKeySequence, QPainter,
                            QPainterPath, QPen, QPixmap)
@@ -43,8 +43,13 @@ PDF_FILTER = "PDF files (*.pdf)"
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp")
 IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.webp)"
 OPEN_FILTER = "PDF and images (*.pdf *.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.webp)"
-FONT_DIRS = [os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"),
-             os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Windows", "Fonts")]
+IS_MAC = sys.platform == "darwin"
+if IS_MAC:
+    FONT_DIRS = ["/System/Library/Fonts/Supplemental", "/System/Library/Fonts", "/Library/Fonts",
+                 os.path.expanduser("~/Library/Fonts")]
+else:
+    FONT_DIRS = [os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"),
+                 os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Windows", "Fonts")]
 REDACT_IMG_NONE = getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
 REDACT_ART_NONE = getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0)
 
@@ -149,20 +154,28 @@ def find_fonts():
                   ("Segoe UI", "segoeui.ttf", "segoeuib.ttf"), ("Tahoma", "tahoma.ttf", "tahomabd.ttf"),
                   ("Verdana", "verdana.ttf", "verdanab.ttf"), ("Georgia", "georgia.ttf", "georgiab.ttf"),
                   ("Khmer UI", "KhmerUI.ttf", "KhmerUIb.ttf"), ("Leelawadee UI", "LeelawUI.ttf", "LeelaUIb.ttf")]
+    if IS_MAC:  # same families, macOS file names (Windows names are tried first, for fonts the user added)
+        candidates += [("Arial", "Arial.ttf", "Arial Bold.ttf"),
+                       ("Times New Roman", "Times New Roman.ttf", "Times New Roman Bold.ttf"),
+                       ("Courier New", "Courier New.ttf", "Courier New Bold.ttf"),
+                       ("Tahoma", "Tahoma.ttf", "Tahoma Bold.ttf"), ("Verdana", "Verdana.ttf", "Verdana Bold.ttf"),
+                       ("Georgia", "Georgia.ttf", "Georgia Bold.ttf")]
     fonts = {}
     for name, reg, bold in candidates:
+        if name in fonts:
+            continue
         for d in FONT_DIRS:
             p = os.path.join(d, reg)
             if os.path.exists(p):
                 b = os.path.join(d, bold)
                 fonts[name] = (p, b if os.path.exists(b) else p)
                 break
-    for d in FONT_DIRS:  # any other installed Khmer fonts (Khmer OS, Battambang, ...)
+    for d in FONT_DIRS:  # any other installed Khmer fonts (Khmer OS, Battambang, macOS Khmer Sangam MN, ...)
         if not os.path.isdir(d):
             continue
         for f in sorted(os.listdir(d)):
             lf = f.lower()
-            if lf.endswith((".ttf", ".otf")) and ("khmer" in lf or "battambang" in lf or "siemreap" in lf
+            if lf.endswith((".ttf", ".otf", ".ttc")) and ("khmer" in lf or "battambang" in lf or "siemreap" in lf
                                                    or "moul" in lf or "hanuman" in lf or "nokora" in lf):
                 if not lf.startswith("khmerui"):
                     p = os.path.join(d, f)
@@ -3050,6 +3063,24 @@ def excepthook(etype, value, tb):
         QMessageBox.critical(app.activeWindow(), APP_NAME, f"Error:\n\n{value}")
 
 
+class App(QApplication):
+    """Receives the files macOS Finder asks the app to open (double-click, Open With, drop on the Dock icon)."""
+
+    def __init__(self, argv):
+        super().__init__(argv)
+        self.window = None
+        self.pending = []
+
+    def event(self, e):
+        if e.type() == QEvent.FileOpen and e.file():
+            if self.window is None:
+                self.pending.append(e.file())
+            else:
+                self.window.open_path(e.file())
+            return True
+        return super().event(e)
+
+
 def main():
     if updater.SELF_TEST_ARG in sys.argv:  # the old version checks that this EXE can start before installing it
         return
@@ -3058,7 +3089,7 @@ def main():
         return
     sys.excepthook = excepthook
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-    app = QApplication(sys.argv)
+    app = App(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")
     i18n.LANG = "en"  # English-only interface
@@ -3074,6 +3105,9 @@ def main():
     w.show()
     if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
         QTimer.singleShot(50, lambda: w.open_path(sys.argv[1]))
+    app.window = w
+    for path in app.pending:
+        QTimer.singleShot(50, lambda p=path: w.open_path(p))
     sys.exit(app.exec())
 
 
